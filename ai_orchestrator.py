@@ -1,5 +1,5 @@
 import json
-from openai import OpenAI
+import google.generativeai as genai
 from protection_engine import (
     check_ct_adequacy,
     ref_areva_calc,
@@ -8,102 +8,68 @@ from protection_engine import (
 
 def run_protection_assistant(user_input, api_key):
 
-    client = OpenAI(api_key=api_key)
+    genai.configure(api_key=api_key)
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "check_ct_adequacy",
-                "description": "CT adequacy check",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ct_ratio": {"type": "string"},
-                        "mva": {"type": "number"},
-                        "voltage_kv": {"type": "number"},
-                        "fault_ka": {"type": "number"},
-                        "accuracy_class": {"type": "string"}
-                    },
-                    "required": ["ct_ratio","mva","voltage_kv","fault_ka"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "ref_areva_calc",
-                "description": "AREVA high impedance REF check",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ct_ratio": {"type": "string"},
-                        "earth_fault_ka": {"type": "number"},
-                        "r_ct": {"type": "number"},
-                        "r_lead": {"type": "number"},
-                        "r_relay": {"type": "number"},
-                        "vk_available": {"type": "number"}
-                    },
-                    "required": ["ct_ratio","earth_fault_ka","r_ct","r_lead","r_relay","vk_available"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "bus_diff_check",
-                "description": "Busbar differential bias check",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "i_diff": {"type": "number"},
-                        "i_restraint": {"type": "number"},
-                        "pickup": {"type": "number"},
-                        "slope": {"type": "number"}
-                    },
-                    "required": ["i_diff","i_restraint","pickup","slope"]
-                }
-            }
-        }
-    ]
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role":"user","content":user_input}],
-        tools=tools,
-        tool_choice="auto",
-        temperature=0
-    )
+    # Step 1 — Ask Gemini to extract structured data
+    extraction_prompt = f"""
+You are a protection engineering assistant.
 
-    message = response.choices[0].message
+From the following user request, identify:
+- which protection check is required (ct, ref, or bus)
+- all numerical parameters needed
 
-    if message.tool_calls:
+Return ONLY valid JSON in this format:
 
-        tool_call = message.tool_calls[0]
-        function_name = tool_call.function.name
-        arguments = json.loads(tool_call.function.arguments)
+{{
+  "check_type": "ct/ref/bus",
+  "parameters": {{ ... }}
+}}
 
-        # Run deterministic function
-        if function_name == "check_ct_adequacy":
-            result = check_ct_adequacy(**arguments)
+User request:
+{user_input}
+"""
 
-        elif function_name == "ref_areva_calc":
-            result = ref_areva_calc(**arguments)
+    extraction_response = model.generate_content(extraction_prompt)
 
-        elif function_name == "bus_diff_check":
-            result = bus_diff_check(**arguments)
+    try:
+        extracted = json.loads(extraction_response.text)
+    except:
+        return None, "Could not extract structured parameters."
 
-        # Send result back for explanation
-        explanation = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role":"system","content":"You are a senior protection engineer. Interpret results. Do not recalculate."},
-                {"role":"user","content":f"User Request: {user_input}"},
-                {"role":"assistant","content":f"Deterministic Result: {result}"}
-            ],
-            temperature=0.2
-        )
+    check_type = extracted["check_type"]
+    params = extracted["parameters"]
 
-        return result, explanation.choices[0].message.content
+    # Step 2 — Run deterministic engine
+    if check_type == "ct":
+        result = check_ct_adequacy(**params)
 
-    return None, "Could not determine required protection check."
+    elif check_type == "ref":
+        result = ref_areva_calc(**params)
+
+    elif check_type == "bus":
+        result = bus_diff_check(**params)
+
+    else:
+        return None, "Unknown protection type."
+
+    # Step 3 — Ask Gemini to explain deterministic result
+    explanation_prompt = f"""
+You are a senior protection engineer.
+
+User request:
+{user_input}
+
+Deterministic result:
+{result}
+
+Interpret results.
+Do NOT recalculate.
+Do NOT modify values.
+Only provide engineering explanation.
+"""
+
+    explanation = model.generate_content(explanation_prompt)
+
+    return result, explanation.text
