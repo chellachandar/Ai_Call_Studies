@@ -1,35 +1,36 @@
 import streamlit as st
+import time
 from ai_orchestrator import run_protection_assistant
 
 st.set_page_config(page_title="Gemini Protection Assistant", layout="wide")
-st.title("⚡ Gemini Protection Engineering Assistant")
+st.title("⚡ Protection Engineering Assistant")
 
-st.info("Calculations are performed deterministically; AI is used for parameter extraction and context.")
+# Check if we are in a cooldown period
+if "last_request_time" not in st.session_state:
+    st.session_state.last_request_time = 0
 
-user_input = st.text_area(
-    "Enter Protection Request",
-    placeholder="Example: 40 MVA, 400kV transformer. 800/1 CT, 25kA fault level. Is the CT adequate?"
-)
+user_input = st.text_area("Engineering Request", placeholder="Describe your CT, REF, or Bus Diff task...")
 
 if st.button("Run Analysis"):
-    if not user_input.strip():
-        st.warning("Please provide technical details.")
-        st.stop()
-
-    with st.spinner("Analyzing with Gemini..."):
-        result, explanation = run_protection_assistant(
-            user_input,
-            st.secrets["GEMINI_API_KEY"]
-        )
-
-    if "ERROR" in result:
-        st.error(f"Error: {result['ERROR']}")
-        st.write(explanation)
+    current_time = time.time()
+    
+    # Simple rate limiting on the UI side (6 seconds between clicks)
+    if current_time - st.session_state.last_request_time < 6:
+        st.error("Slow down! Please wait a few seconds between requests to respect API limits.")
     else:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("🔢 Calculated Data")
-            st.json(result)
-        with col2:
-            st.subheader("🧠 Engineering Interpretation")
-            st.write(explanation)
+        st.session_state.last_request_time = current_time
+        
+        with st.spinner("Consulting Gemini AI..."):
+            result, explanation = run_protection_assistant(
+                user_input,
+                st.secrets["GEMINI_API_KEY"]
+            )
+
+        if "ERROR" in result:
+            st.error(f"System Busy: {result['ERROR']}")
+            st.info(explanation)
+        else:
+            st.success("Analysis Complete")
+            c1, c2 = st.columns(2)
+            c1.json(result)
+            c2.markdown(explanation)
