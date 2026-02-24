@@ -7,26 +7,48 @@ from protection_engine import (
 )
 
 
+# -------------------------
+# JSON CLEANING
+# -------------------------
 def clean_json_response(text):
     text = text.strip()
-
-    # Remove markdown fences if present
     if text.startswith("```"):
         text = text.split("```")[1]
-
     return text.strip()
+
+
+# -------------------------
+# PARAMETER NORMALIZATION
+# -------------------------
+def normalize_ct_params(params):
+    mapping = {
+        "mva_transformer": "mva",
+        "transformer_mva": "mva",
+        "rated_mva": "mva",
+        "voltage": "voltage_kv",
+        "kv": "voltage_kv",
+        "fault_level": "fault_ka",
+        "fault_current": "fault_ka"
+    }
+
+    normalized = {}
+    for key, value in params.items():
+        if key in mapping:
+            normalized[mapping[key]] = value
+        else:
+            normalized[key] = value
+
+    return normalized
 
 
 def run_protection_assistant(user_input, api_key):
 
     genai.configure(api_key=api_key)
-
     model = genai.GenerativeModel("models/gemini-2.5-flash")
 
-    # ----------------------------
-    # STEP 1: STRICT JSON EXTRACTION
-    # ----------------------------
-
+    # -------------------------
+    # STEP 1: STRUCTURED EXTRACTION
+    # -------------------------
     extraction_prompt = f"""
 You are a protection engineering assistant.
 
@@ -54,7 +76,6 @@ User request:
 """
 
     extraction_response = model.generate_content(extraction_prompt)
-
     raw_text = clean_json_response(extraction_response.text)
 
     try:
@@ -68,18 +89,38 @@ User request:
     check_type = extracted.get("check_type")
     params = extracted.get("parameters", {})
 
-    # ----------------------------
-    # STEP 2: RUN DETERMINISTIC ENGINE
-    # ----------------------------
-
+    # -------------------------
+    # STEP 2: RUN ENGINE
+    # -------------------------
     try:
+
         if check_type == "ct":
+
+            params = normalize_ct_params(params)
+
+            required = ["ct_ratio", "mva", "voltage_kv", "fault_ka"]
+            for r in required:
+                if r not in params:
+                    return {"ERROR": f"Missing parameter: {r}"}, "Incomplete CT data."
+
             result = check_ct_adequacy(**params)
 
         elif check_type == "ref":
+
+            required = ["ct_ratio", "earth_fault_ka", "r_ct", "r_lead", "r_relay", "vk_available"]
+            for r in required:
+                if r not in params:
+                    return {"ERROR": f"Missing parameter: {r}"}, "Incomplete REF data."
+
             result = ref_areva_calc(**params)
 
         elif check_type == "bus":
+
+            required = ["i_diff", "i_restraint", "pickup", "slope"]
+            for r in required:
+                if r not in params:
+                    return {"ERROR": f"Missing parameter: {r}"}, "Incomplete Bus Diff data."
+
             result = bus_diff_check(**params)
 
         else:
@@ -88,10 +129,9 @@ User request:
     except Exception as e:
         return {"ERROR": str(e)}, "Deterministic engine failed."
 
-    # ----------------------------
+    # -------------------------
     # STEP 3: ENGINEERING INTERPRETATION
-    # ----------------------------
-
+    # -------------------------
     explanation_prompt = f"""
 You are a senior protection engineer.
 
@@ -101,10 +141,9 @@ User request:
 Deterministic result:
 {result}
 
-Interpret results.
+Interpret results professionally.
 Do NOT recalculate.
-Do NOT modify values.
-Provide professional engineering explanation.
+Do NOT modify numeric values.
 """
 
     explanation_response = model.generate_content(explanation_prompt)
