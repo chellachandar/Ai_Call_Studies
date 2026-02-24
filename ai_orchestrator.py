@@ -6,25 +6,47 @@ from protection_engine import (
     bus_diff_check
 )
 
+
+def clean_json_response(text):
+    text = text.strip()
+
+    # Remove markdown fences if present
+    if text.startswith("```"):
+        text = text.split("```")[1]
+
+    return text.strip()
+
+
 def run_protection_assistant(user_input, api_key):
 
     genai.configure(api_key=api_key)
 
     model = genai.GenerativeModel("models/gemini-2.5-flash")
 
-    # Step 1 — Ask Gemini to extract structured data
+    # ----------------------------
+    # STEP 1: STRICT JSON EXTRACTION
+    # ----------------------------
+
     extraction_prompt = f"""
 You are a protection engineering assistant.
 
-From the following user request, identify:
-- which protection check is required (ct, ref, or bus)
-- all numerical parameters needed
+Extract structured data from the user request.
 
-Return ONLY valid JSON in this format:
+Return ONLY valid JSON.
+No explanation.
+No markdown.
+No extra text.
+
+Allowed check_type values:
+- "ct"
+- "ref"
+- "bus"
+
+Format:
 
 {{
-  "check_type": "ct/ref/bus",
-  "parameters": {{ ... }}
+  "check_type": "ct",
+  "parameters": {{ }}
 }}
 
 User request:
@@ -33,28 +55,43 @@ User request:
 
     extraction_response = model.generate_content(extraction_prompt)
 
+    raw_text = clean_json_response(extraction_response.text)
+
     try:
-        extracted = json.loads(extraction_response.text)
-    except:
-        return None, "Could not extract structured parameters."
+        extracted = json.loads(raw_text)
+    except Exception:
+        return {
+            "ERROR": "JSON extraction failed",
+            "model_output": raw_text
+        }, "Could not extract structured parameters."
 
-    check_type = extracted["check_type"]
-    params = extracted["parameters"]
+    check_type = extracted.get("check_type")
+    params = extracted.get("parameters", {})
 
-    # Step 2 — Run deterministic engine
-    if check_type == "ct":
-        result = check_ct_adequacy(**params)
+    # ----------------------------
+    # STEP 2: RUN DETERMINISTIC ENGINE
+    # ----------------------------
 
-    elif check_type == "ref":
-        result = ref_areva_calc(**params)
+    try:
+        if check_type == "ct":
+            result = check_ct_adequacy(**params)
 
-    elif check_type == "bus":
-        result = bus_diff_check(**params)
+        elif check_type == "ref":
+            result = ref_areva_calc(**params)
 
-    else:
-        return None, "Unknown protection type."
+        elif check_type == "bus":
+            result = bus_diff_check(**params)
 
-    # Step 3 — Ask Gemini to explain deterministic result
+        else:
+            return {"ERROR": "Unknown protection type"}, "Invalid protection type."
+
+    except Exception as e:
+        return {"ERROR": str(e)}, "Deterministic engine failed."
+
+    # ----------------------------
+    # STEP 3: ENGINEERING INTERPRETATION
+    # ----------------------------
+
     explanation_prompt = f"""
 You are a senior protection engineer.
 
@@ -67,9 +104,9 @@ Deterministic result:
 Interpret results.
 Do NOT recalculate.
 Do NOT modify values.
-Only provide engineering explanation.
+Provide professional engineering explanation.
 """
 
-    explanation = model.generate_content(explanation_prompt)
+    explanation_response = model.generate_content(explanation_prompt)
 
-    return result, explanation.text
+    return result, explanation_response.text
