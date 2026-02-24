@@ -10,7 +10,7 @@ def run_protection_assistant(user_input, api_key):
 
     genai.configure(api_key=api_key)
 
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("models/gemini-2.5-flash")
 
     # Step 1 — Ask Gemini to extract structured data
     extraction_prompt = f"""
