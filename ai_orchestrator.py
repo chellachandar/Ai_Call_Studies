@@ -8,7 +8,7 @@ from protection_engine import (
     bus_diff_check
 )
 
-# Retry logic to handle 429 Resource Exhausted errors
+# Retry logic for API stability
 @retry(
     retry=retry_if_exception_type(exceptions.ResourceExhausted),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -26,7 +26,7 @@ def clean_json_response(text):
     return text.strip()
 
 def normalize_params(params):
-    """Map flexible naming to engine requirements and ensure numeric types."""
+    """Ensures parameter names match engine expectations and converts strings to numbers."""
     mapping = {
         "mva_transformer": "mva", "transformer_mva": "mva", "rated_mva": "mva",
         "voltage": "voltage_kv", "kv": "voltage_kv",
@@ -35,7 +35,7 @@ def normalize_params(params):
     normalized = {}
     for key, value in params.items():
         norm_key = mapping.get(key, key)
-        # Convert string numbers to float/int for the math engine
+        # Convert numeric strings to actual float/int for math operations
         if isinstance(value, str) and value.replace('.', '', 1).isdigit():
             normalized[norm_key] = float(value) if '.' in value else int(value)
         else:
@@ -44,20 +44,19 @@ def normalize_params(params):
 
 def run_protection_assistant(user_input, api_key):
     genai.configure(api_key=api_key)
-    # Using Gemini 2.0 Flash for speed and efficiency
+    # Using a valid production model name
     model = genai.GenerativeModel("gemini-2.0-flash") 
 
-    # Consolidated Prompt: One call for extraction and initial engineering thoughts
     orchestration_prompt = f"""
     You are a Senior Protection Engineer. 
     1. Extract parameters from: "{user_input}"
-    2. Provide a brief (2-sentence) professional overview of this protection type.
+    2. Provide a brief professional overview of this protection type.
 
     Return ONLY a JSON object with this structure:
     {{
       "check_type": "ct" | "ref" | "bus",
-      "parameters": {{ ... }},
-      "overview": "Your engineering insight here"
+      "parameters": {{ "ct_ratio": "800/1", ... }},
+      "overview": "Engineering insight here"
     }}
     """
 
@@ -65,31 +64,29 @@ def run_protection_assistant(user_input, api_key):
         response = call_gemini(model, orchestration_prompt)
         raw_data = json.loads(clean_json_response(response.text))
     except exceptions.ResourceExhausted:
-        return {{"ERROR": "Quota Exceeded"}}, "The API rate limit was hit. Please try again in 30 seconds."
+        return {"ERROR": "Quota Exceeded"}, "Rate limit reached. Please wait a moment."
     except Exception as e:
-        return {{"ERROR": "Extraction Failed"}}, f"Failed to parse request: {str(e)}"
+        # FIXED: Removed double curly braces to prevent TypeError
+        return {"ERROR": "Extraction Failed"}, f"Failed to parse request: {str(e)}"
 
     check_type = raw_data.get("check_type")
     params = normalize_params(raw_data.get("parameters", {}))
-    overview = raw_data.get("overview", "Processing protection calculation...")
+    overview = raw_data.get("overview", "Analysis complete.")
 
-    # --- Deterministic Engine Execution ---
     try:
         if check_type == "ct":
             result = check_ct_adequacy(**params)
-            status_text = "Adequate" if result['adequate'] else "Inadequate - Risk of Saturation"
+            status = "Adequate" if result['adequate'] else "Inadequate"
         elif check_type == "ref":
             result = ref_areva_calc(**params)
-            status_text = "Stable" if result['stable'] else "Unstable - Requires Higher Knee Point Voltage"
+            status = "Stable" if result['stable'] else "Unstable"
         elif check_type == "bus":
             result = bus_diff_check(**params)
-            status_text = "Operate (Trip)" if result['operate'] else "Restrain (Normal)"
+            status = "Operate" if result['operate'] else "Restrain"
         else:
-            return {{"ERROR": "Unknown Check"}}, "Unsupported protection type."
+            return {"ERROR": "Unknown Check"}, "Unsupported protection type."
     except Exception as e:
-        return {{"ERROR": "Calculation Error"}}, f"The engine failed: {str(e)}"
+        return {"ERROR": "Calculation Error"}, f"The math engine failed: {str(e)}"
 
-    # Final Interpretation
-    final_explanation = f"**Engineering Overview:** {overview}\n\n**Status:** {status_text}"
-    
+    final_explanation = f"**Engineering Overview:** {overview}\n\n**System Status:** {status}"
     return result, final_explanation
