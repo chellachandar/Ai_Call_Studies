@@ -4,12 +4,18 @@ from ai_orchestrator import run_protection_assistant
 st.set_page_config(layout="wide")
 st.title("⚡ Gemini Protection Engineering Assistant")
 
+st.write("One protection check per prompt.")
+
 user_input = st.text_area(
     "Enter Protection Request",
-    placeholder="Example: Check CT adequacy for 40 MVA transformer, 400 kV, CT 800/1, fault 25 kA, 5P20"
+    placeholder="Example: Check CT adequacy for 40 MVA transformer at 400 kV using 800/1 CT and 25 kA fault, 5P20 class."
 )
 
 if st.button("Run Protection Check"):
+
+    if not user_input.strip():
+        st.warning("Please enter a request.")
+        st.stop()
 
     result, explanation = run_protection_assistant(
         user_input,
